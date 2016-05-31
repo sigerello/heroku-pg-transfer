@@ -1,0 +1,91 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'uri'
+
+class PgTransfer
+  class << self
+
+    def run
+      transfer
+    rescue => e
+      puts e.message
+    end
+
+    def transfer
+      options = {
+        from: nil,
+        to: nil,
+        tables_include: "",
+        tables_exclude: "",
+      }
+      OptionParser.new do |opts|
+        opts.banner = "Usage: pg-transfer [options]"
+        opts.on('-f', '--from URL',                   'Source database URL') { |v| options[:from] = v }
+        opts.on('-t', '--to URL',                     'Target database URL') { |v| options[:to] = v }
+        opts.on('-b', '--tables-include TABLES_LIST', 'Tables to copy, defaults to all') { |v| options[:tables_include] = v }
+        opts.on('-B', '--tables-exclude TABLES_LIST', 'Tables to exclude, defaults to none') { |v| options[:tables_exclude] = v }
+        o = opts
+      end.parse!
+
+      validate_options!(options)
+
+      puts "Source database: #{transfer_pretty_name(options[:from])}"
+      puts "Target database: #{transfer_pretty_name(options[:to])}"
+      puts "Are you sure? [y/n]"
+      yn = gets.chomp
+
+      if yn == 'y'
+        # puts "#{pg_dump_command(options)} | #{pg_restore_command(options)}"
+        system %{ #{pg_dump_command(options)} | #{pg_restore_command(options)} }
+      end
+    end
+
+    def validate_options!(options)
+      errors = []
+
+      errors << "Error: Missing required option --from." unless options[:from]
+      errors << "Error: Missing required option --to." unless options[:to]
+
+      uri_from = URI.parse(options[:from]) rescue nil
+      uri_to = URI.parse(options[:to]) rescue nil
+
+      errors << "Error: Wrong option --from: '#{options[:from]}'. Only PostgreSQL databases can be transferred with this command." if uri_from && uri_from.scheme && !['postgres', 'postgresql'].include?(uri_from.scheme)
+      errors << "Error: Wrong option --to: '#{options[:to]}'. Only PostgreSQL databases can be transferred with this command." if uri_to && uri_to.scheme && !['postgres', 'postgresql'].include?(uri_to.scheme)
+
+      options[:tables_include] = (options[:tables_include] || "").split(",")
+      options[:tables_exclude] = (options[:tables_exclude] || "").split(",")
+
+      if errors.size > 0
+        puts errors
+        exit
+      end
+    end
+
+    def transfer_pretty_name(url)
+      uri = URI.parse(url)
+      "#{uri.path[1..-1]} on #{uri.host||"localhost"}:#{uri.port||5432}"
+    end
+
+    def pg_dump_command(options)
+      uri = URI.parse(options[:from])
+      database = uri.path[1..-1]
+      host = uri.host || "localhost"
+      port = uri.port || "5432"
+      user = uri.user ? "-U #{uri.user}" : ""
+      %{ env PGPASSWORD=#{uri.password} pg_dump --verbose -F c -h #{host} #{user} -p #{port} #{options[:tables_include].map{|name| "-t #{name}" }.join(" ")} #{options[:tables_exclude].map{|name| "--exclude-table-data=#{name}" }.join(" ")} #{database} }
+    end
+
+    def pg_restore_command(options)
+      uri = URI.parse(options[:to])
+      database = uri.path[1..-1]
+      host = uri.host || "localhost"
+      port = uri.port || "5432"
+      user = uri.user ? "-U #{uri.user}" : ""
+      %{ env PGPASSWORD=#{uri.password} pg_restore --verbose --clean --no-acl --no-owner #{user} -h #{host} -d #{database} -p #{port} }
+    end
+
+  end
+end
+
+PgTransfer.run
